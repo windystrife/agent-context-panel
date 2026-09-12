@@ -19,11 +19,21 @@ Port 8096, not 8097: Qwen Code Desktop's renderer unconditionally tries to load
 http://localhost:8097 as a React DevTools script when served from file:, and
 answering that with HTML just produces a console parse error.
 
-NOTE ON VERIFICATION: the schema below was read from a real opencode.db, but at
-the time of writing the `session`, `message` and `part` tables were all empty,
-so the field *semantics* are inferred from the column names and not yet
-confirmed against live data. Where a value can be read two ways, this exposes
-both (see `context_used` vs `context_used_alt`) instead of silently picking one.
+VERIFIED 2026-09-12 against a real 3-turn session:
+
+  session.tokens_input      126209 == 41525 + 42154 + 42530   (sum of turns)
+  session.tokens_cache_read   2274 ==  1920 +   241 +   113
+  session.cost                     == sum of per-message cost
+
+So the session columns are LIFETIME SUMS, not the current context - an earlier
+draft of this file read them as context and would have reported 128,483 used
+where the real answer was 42,643. Conversation context therefore comes from the
+newest assistant message.
+
+Per message, `total == input + output + cache.read`, i.e. `input` EXCLUDES the
+cached prefix. Costing input at the normal rate and cache.read at the cache rate
+reproduced OpenCode's own figure exactly: 41525*0.15 + 1920*0.003 + 16*0.60 per
+1M = 0.00624411, matching the stored cost to all eight decimals.
 """
 
 import argparse
@@ -118,8 +128,17 @@ class Catalog:
                 or self.by_id.get(str(model).split("/")[-1]))
 
 
-def read_sessions(db_path):
-    """Copy-then-read so the live app keeps exclusive use of its own file."""
+def read_db(db_path):
+    """Copy-then-read so the live app keeps exclusive use of its own file.
+
+    Returns (session rows, last assistant turn per session).
+
+    Measured 2026-09-12 against a real 3-turn session: session.tokens_input is
+    the SUM of every assistant turn's input (41525+42154+42530 = 126209), and
+    tokens_cache_read and cost sum the same way. They are session TOTALS, not
+    the size of the current context - so the conversation-context figure has to
+    come from the newest assistant message, not from the session row.
+    """
     tmp = tempfile.mktemp(suffix=".db")
     shutil.copy(db_path, tmp)
     try:
@@ -127,10 +146,51 @@ def read_sessions(db_path):
         con.row_factory = sqlite3.Row
         cols = {c[1] for c in con.execute('PRAGMA table_info("session")')}
         if not cols:
-            return []
+            return [], {}
         rows = [dict(r) for r in con.execute(
             'SELECT * FROM "session" ORDER BY COALESCE(time_updated, time_created) DESC')]
-        return rows
+
+        last = {}
+        try:
+            cur = con.execute(
+                'SELECT session_id, data FROM "message" ORDER BY time_created ASC')
+        except sqlite3.Error:
+            return rows, {}
+        for r in cur:
+            try:
+                d = json.loads(r["data"])
+            except (ValueError, TypeError):
+                continue
+            if d.get("role") != "assistant":
+                continue
+            tok = d.get("tokens") or d.get("usage") or {}
+            if not tok:
+                continue
+            cache = tok.get("cache") or {}
+            turn = {
+                "input": tok.get("input") or 0,
+                "output": tok.get("output") or 0,
+                "reasoning": tok.get("reasoning") or 0,
+                "cache_read": (cache.get("read") or 0) if isinstance(cache, dict) else 0,
+                "cache_write": (cache.get("write") or 0) if isinstance(cache, dict) else 0,
+                "cost": d.get("cost") or 0,
+                "model": d.get("modelID"),
+                "provider": d.get("providerID"),
+            }
+            sid = r["session_id"]
+            # ORDER BY ASC means each later row overwrites: last one wins.
+            a = last.setdefault(sid, {"cost_sum": 0.0, "turns": 0, "by_model": {}})
+            a.update(turn)
+            a["cost_sum"] += turn["cost"]
+            a["turns"] += 1
+            # A session can switch models mid-way, so cost has to be summed per
+            # model rather than charged at whatever model happens to be last.
+            key = f"{turn['provider']}/{turn['model']}"
+            m = a["by_model"].setdefault(
+                key, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
+            for f_ in ("input", "output", "cache_read", "cache_write"):
+                m[f_] += turn[f_]
+        return rows, last
     finally:
         try:
             os.remove(tmp)
@@ -148,8 +208,17 @@ class Monitor:
     def refresh(self):
         sessions, tot = [], {"sessions": 0, "input": 0, "output": 0,
                              "cache_read": 0, "cost": 0.0}
-        for r in read_sessions(self.db):
-            info = self.catalog.lookup(r.get("model")) or {}
+        rows, last_turns = read_db(self.db)
+        for r in rows:
+            last = last_turns.get(r.get("id")) or {}
+            # session.model is only the CURRENT picker selection; the last
+            # assistant turn says which model actually answered.
+            info = (self.catalog.lookup(
+                        f"{last.get('provider')}/{last.get('model')}"
+                        if last.get("provider") and last.get("model") else None)
+                    or self.catalog.lookup(last.get("model"))
+                    or self.catalog.lookup(r.get("model"))
+                    or {})
             window = info.get("context")
             tin = r.get("tokens_input") or 0
             tout = r.get("tokens_output") or 0
@@ -157,23 +226,29 @@ class Monitor:
             tcw = r.get("tokens_cache_write") or 0
             treason = r.get("tokens_reasoning") or 0
 
-            # The prompt actually carried = fresh input + the cached prefix.
-            used = tin + tcr
+            # Conversation context = what the newest request actually carried:
+            # its fresh input plus the cached prefix. The session columns are
+            # lifetime sums (verified), so they would overstate this badly.
+            used = (last.get("input") or 0) + (last.get("cache_read") or 0)
             s = {
                 "id": r.get("id"),
                 "title": r.get("title") or (r.get("slug") or ""),
-                "model": r.get("model"),
+                "model": last.get("model") or r.get("model"),
                 "model_name": info.get("name"),
+                "provider": last.get("provider"),
                 "directory": r.get("directory") or r.get("path"),
                 "agent": r.get("agent"),
                 "input": tin, "output": tout, "cache_read": tcr,
                 "cache_write": tcw, "reasoning": treason,
+                "last_input": last.get("input") or 0,
+                "last_output": last.get("output") or 0,
+                "last_cache_read": last.get("cache_read") or 0,
+                "has_turn": bool(last),
                 "context_window": window,
                 "context_used": used,
-                "context_used_alt": tin,          # if tokens_input already includes cache
-                "context_pct": (100.0 * used / window) if window else None,
+                "context_pct": (100.0 * used / window) if (window and used) else None,
                 "context_available": (window - used) if window else None,
-                "cache_pct": (100.0 * tcr / used) if used else 0.0,
+                "cache_pct": (100.0 * (last.get("cache_read") or 0) / used) if used else 0.0,
                 "cost_db": r.get("cost"),
                 "compacting": bool(r.get("time_compacting")),
                 "archived": bool(r.get("time_archived")),
@@ -182,12 +257,23 @@ class Monitor:
                 "added": r.get("summary_additions"),
                 "removed": r.get("summary_deletions"),
             }
-            price = info.get("cost") or {}
-            s["cost_calc"] = (tin * float(price.get("input", 0) or 0)
-                              + tcr * float(price.get("cache_read", 0) or 0)
-                              + tcw * float(price.get("cache_write", 0) or 0)
-                              + tout * float(price.get("output", 0) or 0)) / 1e6
-            s["priced"] = bool(price)
+            # Recompute per model actually used, then sum. Charging a whole
+            # session at the last model's prices is wrong the moment someone
+            # switches models mid-session - which happens.
+            calc, priced_any = 0.0, False
+            for key, m in (last.get("by_model") or {}).items():
+                p = (self.catalog.lookup(key) or {}).get("cost") or {}
+                if p:
+                    priced_any = True
+                calc += (m["input"] * float(p.get("input", 0) or 0)
+                         + m["cache_read"] * float(p.get("cache_read", 0) or 0)
+                         + m["cache_write"] * float(p.get("cache_write", 0) or 0)
+                         + m["output"] * float(p.get("output", 0) or 0)) / 1e6
+            s["cost_calc"] = calc
+            s["cost_sum"] = last.get("cost_sum")     # what OpenCode itself billed
+            s["models_used"] = sorted((last.get("by_model") or {}).keys())
+            s["turns"] = last.get("turns", 0)
+            s["priced"] = priced_any
             sessions.append(s)
 
             tot["sessions"] += 1
@@ -275,12 +361,13 @@ async function tick(){
     <div class="big mono">${k(cur.context_used)} <span class="label" style="font-size:13px">/ ${k(cur.context_window)}</span></div>
     <div class="bar"><i style="width:${Math.min(100,cur.context_pct||0)}%;background:${col(cur.context_pct)}"></i></div>
     <div class="label mono">${f(cur.context_pct,1)}% used - ${f(cur.context_available)} available
+      - last turn ${k(cur.last_input)} fresh + ${k(cur.last_cache_read)} cached
       ${cur.compacting?" - <b>compacting</b>":""}</div>
     <div class="grid">
-      <div class="b"><div class="label">Input</div><div class="big mono" style="font-size:17px">${k(cur.input)}</div></div>
-      <div class="b"><div class="label">Output</div><div class="big mono" style="font-size:17px">${k(cur.output)}</div></div>
-      <div class="b"><div class="label">Cache read</div><div class="big mono" style="font-size:17px">${k(cur.cache_read)}</div></div>
-      <div class="b"><div class="label">Reasoning</div><div class="big mono" style="font-size:17px">${k(cur.reasoning)}</div></div>
+      <div class="b"><div class="label">Input (session total)</div><div class="big mono" style="font-size:17px">${k(cur.input)}</div></div>
+      <div class="b"><div class="label">Output (session total)</div><div class="big mono" style="font-size:17px">${k(cur.output)}</div></div>
+      <div class="b"><div class="label">Cache read (total)</div><div class="big mono" style="font-size:17px">${k(cur.cache_read)}</div></div>
+      <div class="b"><div class="label">Reasoning (total)</div><div class="big mono" style="font-size:17px">${k(cur.reasoning)}</div></div>
       <div class="b"><div class="label">Cost (db)</div><div class="big mono" style="font-size:17px">${cur.cost_db!=null?"$"+f(cur.cost_db,3):"-"}</div></div>
       <div class="b"><div class="label">Cost (recomputed)</div><div class="big mono" style="font-size:17px">${cur.priced?"$"+f(cur.cost_calc,3):"-"}</div></div>
     </div>
