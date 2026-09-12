@@ -31,9 +31,15 @@ it only surfaces numbers the apps already wrote to disk.
 
 ```
 qwen-code-desktop/   monitor.py  panel.js  inject.py  start-monitor.cmd
+opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
 ninfer/              monitor.py  start-ninfer.cmd
-opencode-desktop/    (in progress)
 ```
+
+| | dashboard | in-app panel |
+|---|---|---|
+| Qwen Code Desktop | ✅ `:8098` | ✅ injected (renderer is unpacked) |
+| OpenCode Desktop | ✅ `:8096` | ⛔ not yet — ships a 143 MB `app.asar`, so injecting means unpack + repack, and an `asarIntegrity` fuse would then refuse to start the app |
+| NInfer (engine) | ✅ `:8099` | n/a |
 
 ### 1. Standalone dashboard — `qwen-code-desktop/monitor.py`
 
@@ -67,7 +73,26 @@ leak in either direction, and it reads the dashboard's API over
 This works because Qwen Code Desktop ships its renderer **unpacked**
 (`resources/app/dist/renderer/`) rather than inside an `app.asar`.
 
-### 3. Server-side monitor — `ninfer/monitor.py`
+### 3. OpenCode Desktop — `opencode-desktop/monitor.py`
+
+```bash
+python3 monitor.py --port 8096
+```
+
+Reads OpenCode's own SQLite database — `session.tokens_input`,
+`tokens_cache_read`, `tokens_output`, `tokens_reasoning`, `cost`, `model` — and
+resolves each model's `limit.context` and per-1M prices from the models.dev
+catalog OpenCode caches at `~/.cache/opencode/models.json`. The database is
+**copied before reading**, so a running OpenCode keeps exclusive use of its file.
+
+> Not yet validated against live data: when this was written, OpenCode's
+> `session`, `message` and `part` tables were empty, so column *semantics* are
+> inferred from their names. Where a number can be read two ways the API returns
+> both (`context_used` = `tokens_input + tokens_cache_read`, `context_used_alt` =
+> `tokens_input` alone) and the page says so rather than rendering confident
+> zeros. Run one OpenCode session and cross-check against its TUI meter.
+
+### 4. Server-side monitor — `ninfer/monitor.py`
 
 For a local inference engine ([NInfer](https://github.com/Neroued/ninfer)), this
 tails `ninfer-serve` logs instead of any client's files, so **every** client is
