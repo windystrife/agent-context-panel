@@ -247,7 +247,9 @@ class Monitor:
             s["last_cache_pct"] = (100.0 * s["last_cached"] / s["last_input"]
                                    if s["last_input"] else 0.0)
 
-            p = prices.get(s["model"]) or {}
+            # OpenRouter routing shortcuts (":floor", ":nitro") ride on the model
+            # id; the price table is keyed by the bare id.
+            p = prices.get(s["model"]) or prices.get((s["model"] or "").split(":")[0]) or {}
             billed_input = max(0, s["input"] - s["cached"])
             s["cost"] = (billed_input * float(p.get("input", 0) or 0)
                          + s["cached"] * float(p.get("cacheRead", 0) or 0)
