@@ -28,15 +28,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULT_CONTEXT = 128000
 
 
+def win_homes():
+    """Home directories to search: this user's, plus every Windows profile
+    reachable from here. Lets one script work natively and from inside WSL,
+    without hard-coding a user name. Set WIN_USER to pin one."""
+    homes = [os.path.expanduser("~")]
+    pinned = os.environ.get("WIN_USER")
+    if pinned:
+        homes = [f"/mnt/c/Users/{pinned}", f"C:/Users/{pinned}"] + homes
+    skip = {"public", "default", "default user", "all users", "defaultuser0"}
+    for root in ("/mnt/c/Users", "C:/Users"):
+        try:
+            for n in sorted(os.listdir(root)):
+                if n.lower() in skip:
+                    continue
+                p = os.path.join(root, n)
+                if os.path.isdir(p):
+                    homes.append(p)
+        except OSError:
+            pass
+    return homes
+
+
 def candidates(*names):
-    """Same home dir seen from Windows or from WSL."""
-    out = []
-    for n in names:
-        out.append(os.path.expanduser("~/" + n))
-        user = os.environ.get("WIN_USER", "tungnt")
-        out.append(f"/mnt/c/Users/{user}/" + n)
-        out.append(f"C:/Users/{user}/" + n)
-    return out
+    return [os.path.join(h, n) for h in win_homes() for n in names]
 
 
 def first_existing(paths):

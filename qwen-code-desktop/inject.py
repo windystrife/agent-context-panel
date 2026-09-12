@@ -19,8 +19,39 @@ import os
 import shutil
 import sys
 
-QWEN_HTML = ("C:/Users/tungnt/AppData/Local/Programs/qwen-code-desktop"
-             "/resources/app/dist/renderer/index.html")
+REL_HTML = ("AppData/Local/Programs/qwen-code-desktop"
+            "/resources/app/dist/renderer/index.html")
+
+
+def win_homes():
+    """This user's home plus every Windows profile reachable from here, so the
+    same script works natively and from inside WSL. Set WIN_USER to pin one."""
+    homes = [os.path.expanduser("~")]
+    pinned = os.environ.get("WIN_USER")
+    if pinned:
+        homes = [f"/mnt/c/Users/{pinned}", f"C:/Users/{pinned}"] + homes
+    skip = {"public", "default", "default user", "all users", "defaultuser0"}
+    for root in ("/mnt/c/Users", "C:/Users"):
+        try:
+            for n in sorted(os.listdir(root)):
+                if n.lower() in skip:
+                    continue
+                p = os.path.join(root, n)
+                if os.path.isdir(p):
+                    homes.append(p)
+        except OSError:
+            pass
+    return homes
+
+
+def find_html():
+    for h in win_homes():
+        p = os.path.join(h, REL_HTML)
+        if os.path.exists(p):
+            return p
+    return None
+
+
 BEGIN = "<!-- BEGIN qwen-ctx-panel (injected; remove with inject.py --revert) -->"
 END = "<!-- END qwen-ctx-panel -->"
 ANCHOR = "</body>"
@@ -93,11 +124,18 @@ def revert(html):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--html", default=QWEN_HTML)
+    ap.add_argument("--html", default=None,
+                    help="renderer index.html (auto-detected if omitted)")
     ap.add_argument("--panel", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.js"))
     ap.add_argument("--revert", action="store_true")
     ap.add_argument("--status", action="store_true")
     a = ap.parse_args()
+
+    if not a.html:
+        a.html = find_html()
+        if not a.html:
+            raise SystemExit("Qwen Code Desktop renderer not found - pass --html\n"
+                             f"  looked for */{REL_HTML}")
 
     if a.status:
         print(f"{status(a.html)}: {a.html}")

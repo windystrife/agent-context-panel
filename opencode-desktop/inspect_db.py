@@ -9,8 +9,26 @@ import sqlite3
 import sys
 import tempfile
 
-src = sys.argv[1] if len(sys.argv) > 1 else \
-    "/mnt/c/Users/tungnt/.local/share/opencode/opencode.db"
+REL = ".local/share/opencode/opencode.db"
+
+
+def find_db():
+    homes = [os.path.expanduser("~")]
+    for root in ("/mnt/c/Users", "C:/Users"):
+        try:
+            homes += [os.path.join(root, n) for n in sorted(os.listdir(root))]
+        except OSError:
+            pass
+    for h in homes:
+        p = os.path.join(h, REL)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+src = sys.argv[1] if len(sys.argv) > 1 else find_db()
+if not src:
+    raise SystemExit(f"opencode.db not found - pass a path (looked for */{REL})")
 
 tmp = tempfile.mktemp(suffix=".db")
 shutil.copy(src, tmp)
