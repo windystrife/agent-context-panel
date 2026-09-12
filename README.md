@@ -31,8 +31,11 @@ it only surfaces numbers the apps already wrote to disk.
 
 ```
 qwen-code-desktop/   monitor.py  panel.js  inject.py  start-monitor.cmd
+                     openrouter_billing.py  opencode_go_usage.py
+                     autostart-monitor.ps1  install-autostart.ps1
 opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
 ninfer/              monitor.py  start-ninfer.cmd
+session-export/      claude_to_qwen.py
 ```
 
 | | dashboard | in-app panel |
@@ -123,6 +126,53 @@ attributes each request to a client by the endpoint it used
 (`/v1/messages` → Claude Code, `/v1/chat/completions` → OpenAI-compatible).
 
 ---
+
+### 5. Cost and usage — `openrouter_billing.py` + `opencode_go_usage.py`
+
+Loaded by `qwen-code-desktop/monitor.py` when a key is available
+(`OPENROUTER_API_KEY` / `~/.claude/openrouter.key`, `OPENCODE_GO_API_KEY` /
+`~/.claude/opencodego.key` or the Qwen `.env`). Keys only ever travel in an
+`Authorization` header and are never logged. `--no-billing` turns both off.
+
+**OpenRouter: billed cost, not an estimate.** Token counts Qwen logs match
+OpenRouter's own to the token, yet a price-table estimate came out exactly
+**2.00× low**: OpenRouter routes each request to one of ~12 providers, and the
+headline price is the cheapest one's. `openrouter_billing.py` resolves every
+`gen-…` id through `/api/v1/generation` into its real `total_cost` and provider,
+caches it on disk, and backfills history. Stats are not available immediately
+(first success took ~49 s; the endpoint can also briefly 404 on ids it answered
+before), so misses back off and retry. Each session is labelled `billed`,
+`partial` (still reconciling) or `estimate`. Account spend comes from
+`/api/v1/key` and `/api/v1/credits`: today, week, month, all time, balance.
+
+**OpenCode Go: limit standing, not a bill.** It is a subscription with per-model
+budgets. The `cost` field on every chat response is always `"0"`, so it is not
+used. `GET /zen/go/v1/usage` (undocumented; what the console shows) gives the
+rolling 5-hour, weekly and monthly windows as status / percent / reset time —
+account-wide (`?model=` is ignored) and integer percent. Per-model rows count
+requests and tokens from Qwen's logs; their dollar figures are catalog
+estimates and are labelled as such.
+
+**Routing notes that affect cost** (measured, not assumed):
+
+- Pinning DeepSeek's own endpoint can be refused by an account privacy setting
+  ("paid-model-training-violation-by-account").
+- `sort: price` (or the `:floor` model suffix) sorts by input/output price and
+  ignores cache price. For cache-heavy agent traffic Morph and Modal cost
+  59% / 112% *more* than the default. Exclude them (`ignore`, or account-wide at
+  `openrouter.ai/settings/privacy`).
+- Qwen Code does not send `generationConfig.extra_body` on chat/completions
+  requests (it only reads `reasoning_effort` from it), so body routing is
+  silently dropped; a model-id suffix such as `:floor` is what reaches OpenRouter.
+
+### 6. Session export — `session-export/claude_to_qwen.py`
+
+Converts a Claude Code transcript (Anthropic-shaped `content[]`) into a Qwen Code
+transcript (Gemini-shaped `parts[]`) and registers it with the desktop app.
+Thinking blocks map to `parts[].thought`; tool calls have no counterpart and are
+flattened to one text line each. Files the session under the target workspace's
+working directory, because the app never finds a transcript filed under the
+source session's cwd. Dry run by default.
 
 ## Where the numbers come from
 

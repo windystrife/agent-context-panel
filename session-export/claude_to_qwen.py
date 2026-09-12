@@ -57,7 +57,7 @@ def first_existing(paths):
 def encode_cwd(cwd):
     """Match Qwen's own folder naming, which does NOT collapse separators:
 
-        C:\\Users\\tungnt            -> c--users-tungnt
+        C:\\Users\\alice             -> c--users-alice
         H:\\Claude                   -> h--claude
 
     The drive colon and the following backslash each become a dash, which is

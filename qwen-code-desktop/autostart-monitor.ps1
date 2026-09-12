@@ -10,10 +10,17 @@
 # ASCII only on purpose: Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI.
 
 $ErrorActionPreference = 'Continue'
-$distro  = 'Ubuntu-24.04'
-$workdir = '/mnt/h/Claude/agent-context-panel/qwen-code-desktop'
+$distro  = $env:WSL_DISTRO        # unset = the default WSL distro
 $port    = 8098
 $log     = Join-Path $env:LOCALAPPDATA 'qwen-ctx-monitor.log'
+
+function Invoke-Wsl([string[]]$argv) {
+    if ($distro) { & wsl.exe -d $distro @argv } else { & wsl.exe @argv }
+}
+
+# This script's own folder, as a path inside WSL, so the launcher works from
+# wherever the repository is checked out instead of one hard-coded location.
+$workdir = (Invoke-Wsl @('-e', 'wslpath', '-a', ($PSScriptRoot -replace '\\', '/')) | Out-String).Trim()
 
 function Write-Log([string]$msg) {
     try { Add-Content -LiteralPath $log -Value ("{0}  {1}" -f (Get-Date -Format s), $msg) } catch { }
@@ -37,7 +44,7 @@ while ($true) {
         continue
     }
     Write-Log "starting monitor"
-    wsl.exe -d $distro -e bash -c ("cd {0} && exec python3 monitor.py --port {1}" -f $workdir, $port) *> $null
+    Invoke-Wsl @('-e', 'bash', '-c', ("cd '{0}' && exec python3 monitor.py --port {1}" -f $workdir, $port)) *> $null
     Write-Log ("monitor exited with code {0}; restarting in 10 s" -f $LASTEXITCODE)
     Start-Sleep -Seconds 10
 }
