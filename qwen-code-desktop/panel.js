@@ -46,7 +46,7 @@
       card = sh.getElementById("card"),
       dot = sh.getElementById("dot"),
       txt = sh.getElementById("txt");
-  var open = false, cur = null, spend = null;
+  var open = false, cur = null, spend = null, ocgo = null;
 
   pill.addEventListener("click", function () {
     open = !open;
@@ -69,6 +69,7 @@
   // "cheap", so scale the precision to the amount.
   // "billed" = OpenRouter's own charge; "partial" = still reconciling;
   // otherwise a price-table estimate, which was measured 2x low.
+  function pct(x) { return x && x.percent != null ? x.percent + "%" : "-"; }
   function costLabel(x) {
     if (x.cost_source === "billed") return "Cost (billed)";
     if (x.cost_source === "partial") return "Billed " + x.billed_resolved + "/" + x.billed_total;
@@ -117,6 +118,10 @@
           ' · month ' + money(spend.usage_monthly, true) +
           (spend.balance != null ? ' · balance ' + money(spend.balance, true) : '') + '</div>'
         : '') +
+      (ocgo && ocgo.rolling
+        ? '<div class="dim mono" style="margin-top:4px">OpenCode Go 5h ' + pct(ocgo.rolling) +
+          ' · week ' + pct(ocgo.weekly) + ' · month ' + pct(ocgo.monthly) + '</div>'
+        : '') +
       '<div class="dim" style="margin-top:8px;overflow:hidden;text-overflow:ellipsis">' +
       (cur.model || "") + '</div>' +
       '<div class="dim" style="margin-top:6px;font-size:11px">most recently active session</div>';
@@ -162,6 +167,7 @@
         } else {
           cur = (s.sessions || [])[0] || null;
           spend = (s.billing && s.billing.account) || null;
+          ocgo = (s.opencode_go && s.opencode_go.limits) || null;
         }
         draw();
       })

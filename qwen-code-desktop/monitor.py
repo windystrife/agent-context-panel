@@ -131,6 +131,7 @@ class Monitor:
         self.lock = threading.Lock()
         self.snap = {"sessions": [], "totals": {}, "error": None}
         self.billing = None          # openrouter_billing.Billing, when a key is available
+        self.opencode = None         # opencode_go_usage.OpenCodeGo, when a key is available
 
     # -- static config -----------------------------------------------------
     def load_context_windows(self):
@@ -293,6 +294,7 @@ class Monitor:
                 "craft_dir": self.craft_dir,
                 "priced_from": self.dscode_models,
                 "billing": self.billing.summary() if self.billing is not None else None,
+                "opencode_go": self.opencode.summary() if self.opencode is not None else None,
                 "updated": time.strftime("%H:%M:%S"),
             }
 
@@ -315,6 +317,7 @@ class Monitor:
             "active_model": snap.get("active_model"),
             "totals": snap.get("totals"),
             "billing": snap.get("billing"),
+            "opencode_go": {"limits": (snap.get("opencode_go") or {}).get("limits")},
             "sessions": (snap.get("sessions") or [])[:5],
         }
         tmp = self.publish_path + ".tmp"
@@ -373,6 +376,7 @@ tr.sel td{background:#232735}
 <div class="sub" id="sub">loading...</div>
 <div class="card" id="panel"></div>
 <div class="card" id="spend"></div>
+<div class="card" id="ocgo"></div>
 <div class="card"><div class="label" style="margin-bottom:9px">Sessions (click one to inspect)</div>
 <div style="overflow-x:auto"><table id="tbl"></table></div></div>
 <script>
@@ -402,6 +406,39 @@ function spendCard(b){
    </div>
    ${b.account_error?`<div class="label" style="margin-top:8px">account lookup failed: ${b.account_error}</div>`:""}`;
 }
+function untilText(iso){
+  const s=(new Date(iso)-Date.now())/1000;
+  if(!(s>0)) return "now";
+  const h=Math.floor(s/3600), m=Math.floor(s%3600/60);
+  return h>=48 ? Math.floor(h/24)+"d" : (h?h+"h ":"")+m+"m";
+}
+// OpenCode Go is a subscription: the truth is the account-wide limit standing
+// from /usage. Per-model rows are measured requests/tokens from Qwen's logs,
+// priced from the catalog - an estimate, since OpenCode's per-response `cost`
+// field is always "0" and there is no per-model usage figure to check against.
+function ocgoCard(o){
+  if(!o) return '<div class="label">OpenCode Go: off (no key found).</div>';
+  const L=o.limits||{};
+  const win=(label,w)=>{
+    const x=L[w]||{}, p=x.percent;
+    const c=p>=90?"var(--bad)":p>=70?"var(--warn)":"var(--green)";
+    return `<div class="box"><div class="label">${label} · ${x.status||"-"}</div>
+      <div class="big mono">${p==null?"-":p+"%"}</div>
+      <div class="bar"><i style="width:${Math.min(100,p||0)}%;background:${c}"></i></div>
+      <div class="label">resets in ${x.resetsAt?untilText(x.resetsAt):"-"}</div></div>`;
+  };
+  const rows=Object.entries(o.models||{}).sort((a,b)=>b[1].requests-a[1].requests).map(([m,v])=>
+    `<tr><td>${m}</td><td class="mono right">${v.requests}</td><td class="mono right">${k(v.input)}</td>
+     <td class="mono right">${k(v.output)}</td><td class="mono right">${money(v.est.month,true)}</td>
+     <td class="mono right">${v.budget_month?"$"+v.budget_month:"-"}</td>
+     <td class="mono right">${v.est_pct?f(v.est_pct.month,1)+"%":"-"}</td></tr>`).join("");
+  return `<div class="label" style="margin-bottom:9px">OpenCode Go subscription · account-wide limits${o.limits_error?" · lookup failed: "+o.limits_error:""}</div>
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+     ${win("5-hour","rolling")}${win("Week","weekly")}${win("Month","monthly")}</div>
+   <div class="label" style="margin:12px 0 6px">Per model via Qwen — requests &amp; tokens measured, $ estimated from the catalog</div>
+   ${rows?`<div style="overflow-x:auto"><table><tr><th>model</th><th class="right">req</th><th class="right">in</th><th class="right">out</th><th class="right">est. $ month</th><th class="right">budget</th><th class="right">est. %</th></tr>${rows}</table></div>`
+         :'<div class="label">No OpenCode Go requests from Qwen yet.</div>'}`;
+}
 function money(v,priced){
   if(!priced) return "no price";
   if(v==null) return "-";
@@ -426,6 +463,7 @@ function render(s){
     "active model: " + (s.active_model||"?") + "  -  " + f((s.totals||{}).requests) +
     " requests across " + (s.sessions||[]).length + " sessions  -  updated " + (s.updated||"");
   document.getElementById("spend").innerHTML = spendCard(s.billing);
+  document.getElementById("ocgo").innerHTML = ocgoCard(s.opencode_go);
   const list=s.sessions||[];
   const cur=list.find(x=>x.session===sel) || list[0];
   const p=document.getElementById("panel");
@@ -591,6 +629,18 @@ def main():
                 mon.billing = orb.Billing(qwen, key)
                 threading.Thread(target=mon.billing.loop, daemon=True).start()
                 billing_state = "on (key from OPENROUTER_API_KEY or ~/.claude/openrouter.key)"
+        try:
+            import opencode_go_usage as ocg
+        except ImportError:
+            ocg = None
+        if ocg is not None:
+            ockey = ocg.find_key(candidates(".claude/opencodego.key"),
+                                 env_files=[os.path.join(qwen, ".env")])
+            catalog = first_existing(candidates(".cache/opencode/models.json"))
+            if ockey:
+                mon.opencode = ocg.OpenCodeGo(qwen, ockey, catalog or "")
+                threading.Thread(target=mon.opencode.loop, daemon=True).start()
+                billing_state += "; OpenCode Go usage on"
 
     pub = args.publish
     if not pub:
