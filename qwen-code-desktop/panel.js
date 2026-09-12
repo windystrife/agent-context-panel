@@ -16,7 +16,7 @@
   var sh = host.attachShadow({ mode: "open" });
   sh.innerHTML =
     '<style>' +
-    ':host{all:initial}' +
+    ':host{display:block;line-height:normal;color:#e6e8ec}' +
     '*{box-sizing:border-box;font:12px/1.45 ui-sans-serif,system-ui,"Segoe UI",sans-serif}' +
     '.pill{display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;' +
     ' background:#1e2128f2;color:#e6e8ec;border:1px solid #333945;cursor:pointer;' +
@@ -102,7 +102,15 @@
     });
   }
 
+  function attach() {
+    // The app mounts React after this script parses, and a framework that
+    // rewrites document.body would take the panel with it. Re-attaching on
+    // every tick is cheaper than watching for it and never gets orphaned.
+    if (document.body && !host.isConnected) document.body.appendChild(host);
+  }
+
   function tick() {
+    attach();
     fetch(API, { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (s) { cur = (s.sessions || [])[0] || null; draw(); })
@@ -111,9 +119,14 @@
 
   function mount() {
     if (!document.body) return setTimeout(mount, 200);
-    document.body.appendChild(host);
+    attach();
+    draw();                       // show the pill immediately, before any fetch
     tick();
     setInterval(tick, 2000);
   }
-  mount();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mount);
+  } else {
+    mount();
+  }
 })();

@@ -363,10 +363,27 @@ tick(); setInterval(tick,2000);
 
 class Handler(BaseHTTPRequestHandler):
     mon = None
+    # Who is actually calling. The injected in-app panel lives in an Electron
+    # renderer whose console is awkward to read, so "is the script alive?"
+    # is answered here instead: if the panel runs, a request shows up.
+    callers = {}
+    callers_lock = threading.Lock()
+
+    def _note_caller(self):
+        who = self.headers.get("Origin") or self.headers.get("Referer") or "(none)"
+        ua = (self.headers.get("User-Agent") or "")[:70]
+        with self.callers_lock:
+            c = self.callers.setdefault(f"{who} | {ua}", {"count": 0, "last": None})
+            c["count"] += 1
+            c["last"] = time.strftime("%H:%M:%S")
 
     def do_GET(self):
         if self.path.startswith("/api/stats"):
-            body, ctype = json.dumps(self.mon.get()).encode(), "application/json"
+            self._note_caller()
+            snap = self.mon.get()
+            with self.callers_lock:
+                snap["callers"] = dict(self.callers)
+            body, ctype = json.dumps(snap).encode(), "application/json"
         elif self.path in ("/", "/index.html"):
             body, ctype = PAGE.encode(), "text/html; charset=utf-8"
         else:
