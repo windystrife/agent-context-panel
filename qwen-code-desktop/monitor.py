@@ -21,6 +21,7 @@ Read-only. Stdlib only.
 import argparse
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,6 +60,42 @@ def first_existing(paths):
         if os.path.exists(p):
             return p
     return None
+
+
+def to_local_path(win_path):
+    """H:\\x\\y -> /mnt/h/x/y when running under WSL; unchanged on Windows."""
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", win_path or "")
+    if m and os.path.isdir("/mnt"):
+        return "/mnt/%s/%s" % (m.group(1).lower(), m.group(2).replace("\\", "/"))
+    return win_path
+
+
+def daemon_workspace():
+    """Workspace the v0.2.x `qwen serve` daemon is bound to, from its log.
+
+    v0.2.x moved all data inside the workspace folder, and nothing else on disk
+    records which folder that is. The daemon prints it on every start:
+      qwen serve listening on http://127.0.0.1:64600 (mode=http-bridge, workspace=H:\\...)
+    The newest such line wins.
+    """
+    log = first_existing(candidates(
+        "AppData/Local/com.alibaba.qwen-code/logs/desktop-runtime.log"))
+    if not log:
+        return None
+    found = None
+    try:
+        with open(log, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "qwen serve listening on" in line and "workspace=" in line:
+                    m = re.search(r"workspace=([^)]+)\)", line)
+                    if m:
+                        found = m.group(1).strip()
+    except OSError:
+        return None
+    if not found:
+        return None
+    local = to_local_path(found)
+    return local if os.path.isdir(local) else None
 
 
 def read_json(path, default=None):
@@ -429,20 +466,42 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
 
-    qwen = args.qwen_dir or first_existing(candidates(".qwen"))
-    craft_root = args.craft_dir or first_existing(candidates(".craft-agent"))
-    craft = os.path.join(craft_root, "workspaces") if craft_root else None
+    qwen, craft = args.qwen_dir, args.craft_dir     # explicit flags win, used as-is
+    layout = "explicit" if (qwen or craft) else None
+
+    if not qwen and not craft:
+        # v0.0.x (Craft/Electron): per-user ~/.qwen + ~/.craft-agent/workspaces
+        old_q = first_existing(candidates(".qwen"))
+        old_c = first_existing(candidates(".craft-agent/workspaces"))
+        if old_q and os.path.isdir(os.path.join(old_q, "usage")):
+            qwen, craft, layout = old_q, old_c, "v0.0.x per-user"
+
+    if not qwen:
+        # v0.2.x (Alibaba/Tauri): data moved INTO the workspace folder, as
+        # <workspace>/.qwen-home. The only place that names the workspace is
+        # the daemon's own startup line, so read it from there.
+        ws = daemon_workspace()
+        if ws:
+            qwen = os.path.join(ws, ".qwen-home")
+            craft = os.path.dirname(ws)          # parent holds <workspace>/sessions
+            layout = "v0.2.x workspace %s" % ws
+
     ds = args.dscode_models or first_existing(candidates(".dscode/models.json"))
 
     if not qwen:
-        raise SystemExit("could not find ~/.qwen - pass --qwen-dir")
+        raise SystemExit(
+            "no Qwen data found.\n"
+            "  v0.0.x looks for ~/.qwen/usage\n"
+            "  v0.2.x looks for 'workspace=' in "
+            "AppData/Local/com.alibaba.qwen-code/logs/desktop-runtime.log\n"
+            "  pass --qwen-dir <dir containing usage/> to point at it directly")
 
     mon = Monitor(qwen, craft, ds)
     mon.refresh()
     threading.Thread(target=mon.loop, daemon=True).start()
     Handler.mon = mon
-    print(f"qwen-monitor: http://127.0.0.1:{args.port}\n  qwen   = {qwen}\n"
-          f"  craft  = {craft}\n  prices = {ds}", flush=True)
+    print(f"qwen-monitor: http://127.0.0.1:{args.port}\n  layout = {layout}\n"
+          f"  qwen   = {qwen}\n  craft  = {craft}\n  prices = {ds}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

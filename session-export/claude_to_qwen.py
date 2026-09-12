@@ -154,9 +154,13 @@ def convert(src, session_id, cwd_override=None):
                     continue
                 usage = msg.get("usage") or {}
                 cached = usage.get("cache_read_input_tokens", 0) or 0
+                model = msg.get("model") or "claude"
                 rec("assistant", provenance="assistant_output",
                     timestamp=d.get("timestamp"),
-                    model=msg.get("model") or "claude",
+                    model=model,
+                    # Qwen writes this on every assistant turn; the context meter
+                    # reads it. Claude models are 200k unless stated otherwise.
+                    contextWindowSize=200000 if model.startswith("claude") else 1048576,
                     message={"role": "model", "parts": parts},
                     usageMetadata={
                         "promptTokenCount": (usage.get("input_tokens", 0) or 0) + cached,
@@ -192,21 +196,47 @@ def main():
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--workspace", default="Qwen")
     ap.add_argument("--session-id", default=None)
+    ap.add_argument("--cwd", default=None,
+                    help="working directory to file the session under. Defaults to "
+                         "the Craft workspace's own workingDirectory, NOT the source "
+                         "session's cwd: the app resolves transcripts relative to the "
+                         "workspace, so a session filed under the original cwd is "
+                         "never found.")
     a = ap.parse_args()
 
     src = a.source
     if not os.path.exists(src):
         raise SystemExit("not found: " + src)
 
-    sid = a.session_id or str(uuid.uuid4())
-    records, stats, title, cwd = convert(src, sid)
-    if not records:
-        raise SystemExit("nothing convertible in " + src)
-
     qwen_root = first_existing(home_candidates(".qwen/projects"))
     craft_root = first_existing(home_candidates(".craft-agent/workspaces"))
     if not qwen_root or not craft_root:
         raise SystemExit("could not locate ~/.qwen/projects or ~/.craft-agent/workspaces")
+
+    # The workspace is bound to a working directory and resolves transcripts
+    # relative to it. Filing the import under the SOURCE session's cwd puts the
+    # transcript in a folder the app never looks at, and the session silently
+    # does not appear.
+    target_cwd = a.cwd
+    if not target_cwd:
+        wcfg = os.path.join(craft_root, a.workspace, "config.json")
+        try:
+            with io.open(wcfg, encoding="utf-8") as f:
+                wd = (json.load(f).get("defaults") or {}).get("workingDirectory")
+        except (OSError, ValueError):
+            wd = None
+        if wd:
+            wd = wd.replace("/", "\\")
+            if wd.startswith("~\\"):
+                user = os.path.basename(os.path.expanduser("~"))
+                wd = "C:\\Users\\%s\\%s" % (user, wd[2:])
+            target_cwd = wd
+            print("workspace working directory: %s" % target_cwd)
+
+    sid = a.session_id or str(uuid.uuid4())
+    records, stats, title, cwd = convert(src, sid, cwd_override=target_cwd)
+    if not records:
+        raise SystemExit("nothing convertible in " + src)
 
     folder = encode_cwd(cwd or "unknown")
     chat_dir = os.path.join(qwen_root, folder, "chats")
