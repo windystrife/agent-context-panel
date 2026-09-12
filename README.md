@@ -64,6 +64,21 @@ python3 inject.py --status   # patched / clean
 python3 inject.py --revert   # restore the pristine backup
 ```
 
+**Autostart.** The panel is only as alive as the monitor behind it. A button
+inside the app cannot start it — the panel is a sandboxed web page and cannot
+launch local programs — so instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-autostart.ps1              # install
+powershell -ExecutionPolicy Bypass -File install-autostart.ps1 -Uninstall   # remove
+```
+
+This drops one shortcut in the per-user Startup folder (no admin, no scheduled
+task, no registry) that runs `autostart-monitor.ps1` hidden. It is a loop, not a
+one-shot: the monitor lives in WSL, and WSL can be shut down under it mid-session.
+Killing the monitor on purpose brought it back 12.8 s later. Restarts are logged
+to `%LOCALAPPDATA%\qwen-ctx-monitor.log`.
+
 The panel is injected **inline** because the app's CSP is
 `script-src 'self' 'unsafe-inline' …` while a separate file under a `file:`/`app:`
 origin is not reliably `'self'`. It renders inside a Shadow DOM, so no styles
