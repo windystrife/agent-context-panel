@@ -64,6 +64,18 @@
   }
   function col(p) { return p >= 90 ? "#f87171" : p >= 70 ? "#fbbf24" : "#818cf8"; }
 
+  // A coding session often costs a fraction of a cent. Two decimals renders
+  // every one of them as "$0.00", which reads as "no estimate" rather than
+  // "cheap", so scale the precision to the amount.
+  function money(v, priced) {
+    if (!priced) return "no price";
+    if (v == null) return "-";
+    if (v >= 1) return "$" + v.toFixed(2);
+    if (v >= 0.01) return "$" + v.toFixed(3);
+    if (v > 0) return "$" + v.toFixed(4);
+    return "$0";
+  }
+
   function draw() {
     if (!cur) {
       dot.style.background = "#6b7280";
@@ -86,7 +98,7 @@
       '<div class="dim mono">' + n(p, 1) + '% used · ' + n(cur.context_available) + ' available</div>' +
       '<div class="g">' +
       '<div class="b"><div class="dim">Total tokens</div><div class="v mono">' + k(cur.input + cur.output) + '</div></div>' +
-      '<div class="b"><div class="dim">Cost (est.)</div><div class="v mono">' + (cur.priced ? "$" + n(cur.cost, 2) : "free") + '</div></div>' +
+      '<div class="b"><div class="dim">Cost (est.)</div><div class="v mono">' + money(cur.cost, cur.priced) + '</div></div>' +
       '<div class="b"><div class="dim">Input</div><div class="v mono">' + k(cur.input) + '</div></div>' +
       '<div class="b"><div class="dim">Output</div><div class="v mono">' + k(cur.output) + '</div></div>' +
       '</div>' +

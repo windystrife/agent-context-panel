@@ -291,6 +291,16 @@ let sel=null, last=null;
 const f=(n,d=0)=>n==null?"-":Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
 const k=n=>n==null?"-":n>=1e6?(n/1e6).toFixed(1)+"m":n>=1e3?Math.round(n/1e3)+"k":String(n);
 const col=p=>p>=90?"var(--bad)":p>=70?"var(--warn)":"var(--ok)";
+// Sessions often cost a fraction of a cent; fixed 2dp renders them all as
+// "$0.00", which reads as "no estimate" instead of "cheap".
+function money(v,priced){
+  if(!priced) return "no price";
+  if(v==null) return "-";
+  if(v>=1) return "$"+v.toFixed(2);
+  if(v>=0.01) return "$"+v.toFixed(3);
+  if(v>0) return "$"+v.toFixed(4);
+  return "$0";
+}
 function ring(pct){
   const C=2*Math.PI*54, off=C*(1-Math.min(100,pct||0)/100);
   return `<svg width="132" height="132" viewBox="0 0 132 132">
@@ -322,7 +332,7 @@ function render(s){
      <div style="flex:1;min-width:260px">
        <div class="grid2">
          <div class="box"><div class="label">Total tokens</div><div class="big mono">${k(cur.input+cur.output)}</div></div>
-         <div class="box"><div class="label">Cost (est.)</div><div class="big mono">${cur.priced?"$"+f(cur.cost,2):"local / free"}</div></div>
+         <div class="box"><div class="label">Cost (est.)</div><div class="big mono">${money(cur.cost,cur.priced)}</div></div>
          <div class="box"><div class="label">Input</div><div class="big mono">${k(cur.input)}</div></div>
          <div class="box"><div class="label">Output</div><div class="big mono">${k(cur.output)}</div></div>
        </div>
@@ -351,7 +361,7 @@ function render(s){
      <td class="mono right">${k(x.input)}</td><td class="mono right">${k(x.output)}</td>
      <td class="mono right">${f(x.cache_pct,0)}%</td>
      <td class="mono right">${x.requests}</td>
-     <td class="mono right">${x.priced?"$"+f(x.cost,2):"-"}</td>
+     <td class="mono right">${money(x.cost,x.priced)}</td>
      <td class="mono" style="color:var(--dim)">${(x.last||"").replace("T"," ").slice(5,16)}</td></tr>`).join("");
   document.querySelectorAll("#tbl tr.clk").forEach(tr=>
     tr.onclick=()=>{ sel=tr.dataset.id; render(last); });
