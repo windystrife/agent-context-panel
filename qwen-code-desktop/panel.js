@@ -121,11 +121,37 @@
     if (document.body && !host.isConnected) document.body.appendChild(host);
   }
 
+  // Qwen Code Desktop 0.2.x serves this page from its own daemon with a CSP of
+  // `connect-src 'self'`, so fetching the monitor's port is refused outright.
+  // The monitor also publishes its snapshot under assets/, which that daemon
+  // serves publicly on the page's own origin. Try that first, and fall back to
+  // the monitor API for the 0.0.x Electron build, whose CSP allowed it.
+  var SAME_ORIGIN = "/assets/ctx-stats.json";
+  var STALE_S = 15;
+
+  function load() {
+    // assets/ comes back "immutable, max-age=1y": without a unique query the
+    // browser would hand every poll the very first snapshot, forever.
+    return fetch(SAME_ORIGIN + "?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("no same-origin stats"); return r.json(); })
+      .catch(function () {
+        return fetch(API, { cache: "no-store" }).then(function (r) { return r.json(); });
+      });
+  }
+
   function tick() {
     attach();
-    fetch(API, { cache: "no-store" })
-      .then(function (r) { return r.json(); })
-      .then(function (s) { cur = (s.sessions || [])[0] || null; draw(); })
+    load()
+      .then(function (s) {
+        // A published file outlives the monitor that wrote it. Old numbers
+        // that look live are worse than an honest "monitor off".
+        if (s.published_at && (Date.now() / 1000 - s.published_at) > STALE_S) {
+          cur = null;
+        } else {
+          cur = (s.sessions || [])[0] || null;
+        }
+        draw();
+      })
       .catch(function () { cur = null; draw(); });
   }
 

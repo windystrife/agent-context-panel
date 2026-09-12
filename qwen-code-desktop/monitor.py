@@ -275,10 +275,39 @@ class Monitor:
                 "updated": time.strftime("%H:%M:%S"),
             }
 
+    publish_path = None
+
+    def publish(self):
+        """Write a trimmed snapshot where the in-app panel can read it.
+
+        Qwen Code Desktop 0.2.x serves its UI from a local daemon whose CSP is
+        `connect-src 'self'`, so the panel cannot fetch this server's port. The
+        daemon does serve web-shell/assets/* publicly on its own origin, and
+        reads those files live from disk, so a JSON dropped there is reachable.
+        Written to a temp name and renamed, so a poll never sees half a file.
+        """
+        if not self.publish_path:
+            return
+        snap = self.get()
+        slim = {
+            "published_at": time.time(),
+            "active_model": snap.get("active_model"),
+            "totals": snap.get("totals"),
+            "sessions": (snap.get("sessions") or [])[:5],
+        }
+        tmp = self.publish_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(slim, f)
+            os.replace(tmp, self.publish_path)
+        except OSError:
+            pass          # the app may be mid-update; try again next tick
+
     def loop(self, interval=2.0):
         while True:
             try:
                 self.refresh()
+                self.publish()
             except Exception as e:                      # never die on bad data
                 with self.lock:
                     self.snap = dict(self.snap, error=f"{type(e).__name__}: {e}")
@@ -463,6 +492,10 @@ def main():
     ap.add_argument("--craft-dir", default=None)
     ap.add_argument("--dscode-models", default=None)
     ap.add_argument("--port", type=int, default=8098)
+    ap.add_argument("--publish", default=None,
+                    help="also write a snapshot JSON here for the in-app panel "
+                         "(default: Qwen Code Desktop 0.2.x "
+                         "runtime/qwen-code/lib/web-shell/assets/ctx-stats.json, if installed)")
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
 
@@ -497,11 +530,20 @@ def main():
             "  pass --qwen-dir <dir containing usage/> to point at it directly")
 
     mon = Monitor(qwen, craft, ds)
+    pub = args.publish
+    if not pub:
+        assets = first_existing(candidates(
+            "AppData/Local/Qwen Code Desktop/runtime/qwen-code/lib/web-shell/assets"))
+        if assets:
+            pub = os.path.join(assets, "ctx-stats.json")
+    mon.publish_path = pub
     mon.refresh()
+    mon.publish()
     threading.Thread(target=mon.loop, daemon=True).start()
     Handler.mon = mon
-    print(f"qwen-monitor: http://127.0.0.1:{args.port}\n  layout = {layout}\n"
-          f"  qwen   = {qwen}\n  craft  = {craft}\n  prices = {ds}", flush=True)
+    print(f"qwen-monitor: http://127.0.0.1:{args.port}\n  layout  = {layout}\n"
+          f"  qwen    = {qwen}\n  craft   = {craft}\n  prices  = {ds}\n"
+          f"  publish = {pub}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
