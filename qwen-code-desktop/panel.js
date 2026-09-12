@@ -46,7 +46,7 @@
       card = sh.getElementById("card"),
       dot = sh.getElementById("dot"),
       txt = sh.getElementById("txt");
-  var open = false, cur = null;
+  var open = false, cur = null, spend = null;
 
   pill.addEventListener("click", function () {
     open = !open;
@@ -67,6 +67,13 @@
   // A coding session often costs a fraction of a cent. Two decimals renders
   // every one of them as "$0.00", which reads as "no estimate" rather than
   // "cheap", so scale the precision to the amount.
+  // "billed" = OpenRouter's own charge; "partial" = still reconciling;
+  // otherwise a price-table estimate, which was measured 2x low.
+  function costLabel(x) {
+    if (x.cost_source === "billed") return "Cost (billed)";
+    if (x.cost_source === "partial") return "Billed " + x.billed_resolved + "/" + x.billed_total;
+    return "Cost (est.)";
+  }
   function money(v, priced) {
     if (!priced) return "no price";
     if (v == null) return "-";
@@ -98,13 +105,18 @@
       '<div class="dim mono">' + n(p, 1) + '% used · ' + n(cur.context_available) + ' available</div>' +
       '<div class="g">' +
       '<div class="b"><div class="dim">Total tokens</div><div class="v mono">' + k(cur.input + cur.output) + '</div></div>' +
-      '<div class="b"><div class="dim">Cost (est.)</div><div class="v mono">' + money(cur.cost, cur.priced) + '</div></div>' +
+      '<div class="b"><div class="dim">' + costLabel(cur) + '</div><div class="v mono">' + money(cur.cost, cur.priced) + '</div></div>' +
       '<div class="b"><div class="dim">Input</div><div class="v mono">' + k(cur.input) + '</div></div>' +
       '<div class="b"><div class="dim">Output</div><div class="v mono">' + k(cur.output) + '</div></div>' +
       '</div>' +
       '<div class="bar" style="margin-top:11px"><i style="width:' + Math.min(100, cur.cache_pct) + '%;background:#4ade80"></i></div>' +
       '<div class="dim mono">Cache ' + n(cur.cache_pct, 0) + '% · read ' + k(cur.cached) +
       ' · ' + cur.requests + ' requests</div>' +
+      (spend && spend.usage_daily != null
+        ? '<div class="dim mono" style="margin-top:8px">OpenRouter today ' + money(spend.usage_daily, true) +
+          ' · month ' + money(spend.usage_monthly, true) +
+          (spend.balance != null ? ' · balance ' + money(spend.balance, true) : '') + '</div>'
+        : '') +
       '<div class="dim" style="margin-top:8px;overflow:hidden;text-overflow:ellipsis">' +
       (cur.model || "") + '</div>' +
       '<div class="dim" style="margin-top:6px;font-size:11px">most recently active session</div>';
@@ -149,6 +161,7 @@
           cur = null;
         } else {
           cur = (s.sessions || [])[0] || null;
+          spend = (s.billing && s.billing.account) || null;
         }
         draw();
       })

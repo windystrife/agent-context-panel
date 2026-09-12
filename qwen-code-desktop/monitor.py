@@ -130,6 +130,7 @@ class Monitor:
         self.dscode_models = dscode_models
         self.lock = threading.Lock()
         self.snap = {"sessions": [], "totals": {}, "error": None}
+        self.billing = None          # openrouter_billing.Billing, when a key is available
 
     # -- static config -----------------------------------------------------
     def load_context_windows(self):
@@ -251,6 +252,25 @@ class Monitor:
                          + s["cached"] * float(p.get("cacheRead", 0) or 0)
                          + s["output"] * float(p.get("output", 0) or 0)) / 1_000_000.0
             s["priced"] = bool(p)
+            s["cost_estimate"] = s["cost"]
+            s["cost_source"] = "estimate" if s["priced"] else "none"
+
+            # Replace the price-table guess with what OpenRouter actually billed.
+            # The estimate was measured 2.00x low: it cannot know which of ~12
+            # providers served a request. While the backfill is still resolving
+            # generations, blend billed (resolved share) with the estimate for
+            # the rest, and say so, instead of showing a number that looks final.
+            if self.billing is not None:
+                b = self.billing.session(sid)
+                s["billed_resolved"], s["billed_total"] = b["resolved"], b["total"]
+                s["providers"] = b["providers"]
+                if b["total"]:
+                    if b["resolved"] >= b["total"]:
+                        s["cost"], s["cost_source"] = b["billed"], "billed"
+                    elif b["resolved"]:
+                        rest = s["cost_estimate"] * (1.0 - b["resolved"] / b["total"])
+                        s["cost"], s["cost_source"] = b["billed"] + rest, "partial"
+                    s["priced"] = True
 
             s.update(meta.get(sid, {}))
             s.update({k: v for k, v in (rollup.get(sid) or {}).items()})
@@ -272,6 +292,7 @@ class Monitor:
                 "qwen_dir": self.qwen_dir,
                 "craft_dir": self.craft_dir,
                 "priced_from": self.dscode_models,
+                "billing": self.billing.summary() if self.billing is not None else None,
                 "updated": time.strftime("%H:%M:%S"),
             }
 
@@ -293,6 +314,7 @@ class Monitor:
             "published_at": time.time(),
             "active_model": snap.get("active_model"),
             "totals": snap.get("totals"),
+            "billing": snap.get("billing"),
             "sessions": (snap.get("sessions") or [])[:5],
         }
         tmp = self.publish_path + ".tmp"
@@ -350,6 +372,7 @@ tr.sel td{background:#232735}
 <h1>Qwen Code Desktop - conversation context</h1>
 <div class="sub" id="sub">loading...</div>
 <div class="card" id="panel"></div>
+<div class="card" id="spend"></div>
 <div class="card"><div class="label" style="margin-bottom:9px">Sessions (click one to inspect)</div>
 <div style="overflow-x:auto"><table id="tbl"></table></div></div>
 <script>
@@ -359,6 +382,26 @@ const k=n=>n==null?"-":n>=1e6?(n/1e6).toFixed(1)+"m":n>=1e3?Math.round(n/1e3)+"k
 const col=p=>p>=90?"var(--bad)":p>=70?"var(--warn)":"var(--ok)";
 // Sessions often cost a fraction of a cent; fixed 2dp renders them all as
 // "$0.00", which reads as "no estimate" instead of "cheap".
+// Where the cost figure comes from. "billed" is OpenRouter's own charge per
+// generation; "partial" means the backfill is still resolving generations;
+// "estimate" is the price table, measured 2x low for multi-provider routing.
+function costLabel(x){
+  if(x.cost_source==="billed") return "Cost (billed)";
+  if(x.cost_source==="partial") return "Cost (billed "+x.billed_resolved+"/"+x.billed_total+")";
+  return "Cost (est.)";
+}
+function spendCard(b){
+  if(!b) return '<div class="label">OpenRouter billing is off (no key found).</div>';
+  const a=b.account||{};
+  const cell=(l,v)=>`<div class="box"><div class="label">${l}</div><div class="big mono">${v==null?"-":money(v,true)}</div></div>`;
+  const prov=b.generations?` · ${b.resolved}/${b.generations} generations reconciled`:"";
+  return `<div class="label" style="margin-bottom:9px">OpenRouter account spend (all apps on this key)${prov}</div>
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
+     ${cell("Today",a.usage_daily)}${cell("This week",a.usage_weekly)}${cell("This month",a.usage_monthly)}
+     ${cell("All time",a.usage)}${cell("Balance",a.balance)}
+   </div>
+   ${b.account_error?`<div class="label" style="margin-top:8px">account lookup failed: ${b.account_error}</div>`:""}`;
+}
 function money(v,priced){
   if(!priced) return "no price";
   if(v==null) return "-";
@@ -382,6 +425,7 @@ function render(s){
   document.getElementById("sub").textContent =
     "active model: " + (s.active_model||"?") + "  -  " + f((s.totals||{}).requests) +
     " requests across " + (s.sessions||[]).length + " sessions  -  updated " + (s.updated||"");
+  document.getElementById("spend").innerHTML = spendCard(s.billing);
   const list=s.sessions||[];
   const cur=list.find(x=>x.session===sel) || list[0];
   const p=document.getElementById("panel");
@@ -398,7 +442,7 @@ function render(s){
      <div style="flex:1;min-width:260px">
        <div class="grid2">
          <div class="box"><div class="label">Total tokens</div><div class="big mono">${k(cur.input+cur.output)}</div></div>
-         <div class="box"><div class="label">Cost (est.)</div><div class="big mono">${money(cur.cost,cur.priced)}</div></div>
+         <div class="box"><div class="label">${costLabel(cur)}</div><div class="big mono">${money(cur.cost,cur.priced)}</div></div>
          <div class="box"><div class="label">Input</div><div class="big mono">${k(cur.input)}</div></div>
          <div class="box"><div class="label">Output</div><div class="big mono">${k(cur.output)}</div></div>
        </div>
@@ -492,6 +536,8 @@ def main():
     ap.add_argument("--craft-dir", default=None)
     ap.add_argument("--dscode-models", default=None)
     ap.add_argument("--port", type=int, default=8098)
+    ap.add_argument("--no-billing", action="store_true",
+                    help="do not query OpenRouter for billed cost / account spend")
     ap.add_argument("--publish", default=None,
                     help="also write a snapshot JSON here for the in-app panel "
                          "(default: Qwen Code Desktop 0.2.x "
@@ -530,6 +576,22 @@ def main():
             "  pass --qwen-dir <dir containing usage/> to point at it directly")
 
     mon = Monitor(qwen, craft, ds)
+
+    billing_state = "off (--no-billing)" if args.no_billing else "off (no OpenRouter key found)"
+    if not args.no_billing:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        try:
+            import openrouter_billing as orb
+        except ImportError:
+            orb, billing_state = None, "off (openrouter_billing.py missing)"
+        if orb is not None:
+            key = orb.find_key(candidates(".claude/openrouter.key"))
+            if key:
+                mon.billing = orb.Billing(qwen, key)
+                threading.Thread(target=mon.billing.loop, daemon=True).start()
+                billing_state = "on (key from OPENROUTER_API_KEY or ~/.claude/openrouter.key)"
+
     pub = args.publish
     if not pub:
         assets = first_existing(candidates(
@@ -543,7 +605,7 @@ def main():
     Handler.mon = mon
     print(f"qwen-monitor: http://127.0.0.1:{args.port}\n  layout  = {layout}\n"
           f"  qwen    = {qwen}\n  craft   = {craft}\n  prices  = {ds}\n"
-          f"  publish = {pub}", flush=True)
+          f"  publish = {pub}\n  billing = {billing_state}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 
