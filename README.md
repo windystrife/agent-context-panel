@@ -30,7 +30,7 @@ it only surfaces numbers the apps already wrote to disk.
 ## What's in here
 
 ```
-qwen-code-desktop/   monitor.py  panel.js  inject.py  start-monitor.cmd
+qwen-code-desktop/   monitor.py  panel.js  inject.py  ctxpop.py  start-monitor.cmd
                      openrouter_billing.py  opencode_go_usage.py
                      autostart-monitor.ps1  install-autostart.ps1
 opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
@@ -90,6 +90,38 @@ leak in either direction, and it reads the dashboard's API over
 
 This works because Qwen Code Desktop ships its renderer **unpacked**
 (`resources/app/dist/renderer/`) rather than inside an `app.asar`.
+
+**0.3.x layout.** Qwen Code Desktop 0.3.0 is no longer Electron: a WebView2
+shell (`%LOCALAPPDATA%\Qwen Code Desktop\qwen-code-desktop.exe`) starts the CLI
+as a daemon (`runtime\qwen-code\lib\cli-entry.js serve --port 0 --require-auth`)
+and loads the UI from `runtime\qwen-code\lib\web-shell\` over loopback. The
+page to inject is now `web-shell\index.html` (pass it with `--html`); its CSP is
+`connect-src 'self'`, so the panel reads the monitor's snapshot from
+`web-shell\assets\ctx-stats.json` instead of port 8098.
+
+### 2b. Dismissible context breakdown — `ctxpop.py`
+
+In 0.3.x the footer's context ring calls `/context`: it echoes the command into
+the chat and appends the breakdown as a message, so every look at the numbers
+leaves two entries in the transcript. `ctxpop.py` rewires that button to a
+popover — the same "Context Usage" panel the app renders in its right-panel
+tab, anchored above the button, closed by Esc, a click outside, or clicking
+the button again — the way Claude Code's context-window popover behaves.
+
+```bash
+python ctxpop.py            # patch (backs up the bundle once, node --check)
+python ctxpop.py --status   # patched / clean
+python ctxpop.py --revert   # restore the pristine bundle
+```
+
+It patches one file, the web-shell's main bundle, in four places, capturing the
+minified names with regexes and refusing unless each anchor matches exactly
+once. Typing `/context` by hand still goes to the chat, and the header's
+"Context Usage" icon still opens the docked right-panel tab.
+
+Restart the app afterwards: assets are served `immutable`, and the running
+page keeps the old bundle. A restart is enough — the daemon picks a fresh port,
+so the cache key changes. App updates replace the bundle; re-run the script.
 
 ### 3. OpenCode Desktop — `opencode-desktop/monitor.py`
 

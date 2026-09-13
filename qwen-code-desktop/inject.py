@@ -19,8 +19,10 @@ import os
 import shutil
 import sys
 
-REL_HTML = ("AppData/Local/Programs/qwen-code-desktop"
-            "/resources/app/dist/renderer/index.html")
+# 0.3.x (WebView2 shell + daemon-served web-shell) first, then the 0.0.x Electron layout
+REL_HTMLS = ("AppData/Local/Qwen Code Desktop/runtime/qwen-code/lib/web-shell/index.html",
+             "AppData/Local/Programs/qwen-code-desktop/resources/app/dist/renderer/index.html")
+REL_HTML = REL_HTMLS[0]
 
 
 def win_homes():
@@ -46,9 +48,10 @@ def win_homes():
 
 def find_html():
     for h in win_homes():
-        p = os.path.join(h, REL_HTML)
-        if os.path.exists(p):
-            return p
+        for rel in REL_HTMLS:
+            p = os.path.join(h, rel)
+            if os.path.exists(p):
+                return p
     return None
 
 
