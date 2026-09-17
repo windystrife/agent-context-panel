@@ -31,6 +31,7 @@ it only surfaces numbers the apps already wrote to disk.
 
 ```
 qwen-code-desktop/   monitor.py  panel.js  inject.py  ctxpop.py  start-monitor.cmd
+                     update-qwen-desktop.ps1/.cmd  update-helper.mjs
                      openrouter_billing.py  opencode_go_usage.py
                      autostart-monitor.ps1  install-autostart.ps1
 opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
@@ -122,6 +123,46 @@ once. Typing `/context` by hand still goes to the chat, and the header's
 Restart the app afterwards: assets are served `immutable`, and the running
 page keeps the old bundle. A restart is enough — the daemon picks a fresh port,
 so the cache key changes. App updates replace the bundle; re-run the script.
+Its anchors do not match 0.24.0 (the context panel component changed); it
+refuses and leaves the bundle untouched.
+
+### 2c. Updating the app — `update-qwen-desktop.ps1`
+
+The in-app "Install and restart" of Qwen Code Desktop 0.2x can fail in three
+ways, all before or while copying files:
+
+- the app exits to run its NSIS installer, but the daemon it spawned
+  (`runtime\qwen-code\node\node.exe … serve`) and its ACP child keep running
+  and hold `node.exe` open, so the installer stops partway;
+- the installer first runs the uninstaller of the old Electron
+  "Qwen Code Desktop" 0.0.x if that is still installed, and aborts (exit code 2)
+  when that uninstall fails;
+- it installs to `HKCU\Software\alibaba\Qwen Code Desktop` or else
+  `%LOCALAPPDATA%\Qwen Code Desktop`, so a copy unpacked elsewhere is never
+  updated.
+
+```bat
+update-qwen-desktop.cmd                  :: update if the feed has a newer version
+update-qwen-desktop.cmd -CheckOnly       :: report only
+update-qwen-desktop.cmd -Force           :: reinstall the latest
+update-qwen-desktop.cmd -InstallDir D:\apps\qwen-desktop -Launcher D:\apps\launch-qwen.ps1
+```
+
+It reads the official update feed, reuses the installer the app already
+downloaded to `%TEMP%` (or downloads it) and checks its minisign signature
+with the key embedded in the app, stops every process started from the install
+folder, parks the old Electron uninstaller during the install (pass
+`-RemoveLegacyElectron` to let the installer remove that app instead), installs
+silently with `/S /NS /D=<dir>`, and refuses to report success unless the
+installer exited 0, `uninstall.exe` was rewritten and every file listed in
+`runtime\qwen-code\checksums.json` matches. Then it moves patch backups of the
+previous version out of the way, re-runs `inject.py` and `ctxpop.py`, and starts
+the app (not from an SSH session). `update-helper.mjs` does the Ed25519 /
+BLAKE2b and SHA-256 work that Windows PowerShell 5.1 cannot; it needs Node 18+
+on PATH or falls back to a copy of the app's own `node.exe`.
+
+Do not run it from inside Qwen Code Desktop without `-CheckOnly`: it stops the
+app it is running in.
 
 ### 3. OpenCode Desktop — `opencode-desktop/monitor.py`
 
@@ -237,8 +278,8 @@ cost = (input − cached)·price.input + cached·price.cacheRead + output·price
 
 ## Caveats
 
-- **App updates overwrite the injection.** Qwen Code Desktop ships
-  `electron-updater`; after it updates, re-run `inject.py`. `--status` tells you.
+- **App updates overwrite the injection.** After an update, re-run `inject.py`
+  (`--status` tells you), or update with `update-qwen-desktop.ps1`, which does it.
 - The in-app panel shows the **most recently active session**, since an injected
   script cannot read the app's React state to learn which session is on screen.
 - Cost is an estimate from a static price table; it is not billing data.
