@@ -33,6 +33,7 @@ it only surfaces numbers the apps already wrote to disk.
 qwen-code-desktop/   monitor.py  panel.js  inject.py  ctxpop.py  start-monitor.cmd
                      update-qwen-desktop.ps1/.cmd  update-helper.mjs
                      openrouter_billing.py  opencode_go_usage.py
+                     opencode-session-header.mjs
                      autostart-monitor.ps1  install-autostart.ps1
 opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
 ninfer/              monitor.py  start-ninfer.cmd
@@ -125,6 +126,12 @@ page keeps the old bundle. A restart is enough — the daemon picks a fresh port
 so the cache key changes. App updates replace the bundle; re-run the script.
 Its anchors do not match 0.24.0 (the context panel component changed); it
 refuses and leaves the bundle untouched.
+
+Newer builds do it themselves: from the web-shell bundle dated 2026-10-19
+(0.26.5 here), hovering the context chip opens a popover with the usage and a
+compress button, and clicking it opens the docked "Context Usage" panel. On
+those `--status` reports `native` and a patch run does nothing and exits 0, so
+the update script no longer warns about it.
 
 ### 2c. Updating the app — `update-qwen-desktop.ps1`
 
@@ -237,6 +244,24 @@ estimates and are labelled as such.
 - Qwen Code does not send `generationConfig.extra_body` on chat/completions
   requests (it only reads `reasoning_effort` from it), so body routing is
   silently dropped; a model-id suffix such as `:floor` is what reaches OpenRouter.
+
+**OpenCode Go needs a session id per conversation** — `opencode-session-header.mjs`.
+The gateway answers `400 MissingSessionID` to a request without
+`x-opencode-session`, and its docs ask for a stable id *for each
+conversation*. A fixed UUID in `customHeaders` gets past the 400 but files every
+conversation, subagent and machine under one id. Qwen Code 0.26 can fill the
+header per request from `${session_id}`, but only with
+`outboundCorrelation.allowDynamicHeaderValues: true`; with that switch off the
+header is **dropped**, and the 400 comes back. The script sets both on every
+OpenCode Go provider entry (backup first, dry run by default):
+
+```bash
+node opencode-session-header.mjs            # report
+node opencode-session-header.mjs --apply    # write; then restart Qwen Code
+```
+
+Checked with Qwen Code 0.26.5 and 0.26.6 against a throwaway `QWEN_HOME`:
+placeholder without the switch → `400 MissingSessionID`; with it → `200`.
 
 ### 6. Session export — `session-export/claude_to_qwen.py`
 

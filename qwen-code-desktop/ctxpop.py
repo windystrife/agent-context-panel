@@ -21,6 +21,10 @@ What it changes (one file, the web-shell's main bundle):
 
 Typing "/context" yourself still works the old way (it is a chat command).
 
+Newer builds (the web-shell bundle from 2026-10-19 on; 0.26.5 here) have this
+natively: hovering the context chip opens a popover, a click opens the docked
+panel. On those, --status says "native" and patching is a no-op (exit 0).
+
 Safe by construction: one-time pristine backup, refuses to patch twice, every
 anchor must match exactly once (regexes capture the minified names, so a
 re-minified build either matches fully or is refused), read-back check, and
@@ -68,10 +72,20 @@ def backup_path(bundle):
     return bundle + ".bak-before-ctxpop"
 
 
+# Qwen Code Desktop 0.26 ships its own popover for the context chip: hovering
+# opens a card with the usage and a compress button, and a click opens the
+# docked "Context Usage" panel. Its component takes these props, in this order.
+NATIVE = re.compile(r'function \w+\(\{tokenCount:\w+,contextWindow:\w+,known:\w+,'
+                    r'controls:\w+,onOpenDetails:\w+,')
+
+
 def status(bundle):
     if not os.path.exists(bundle):
         return "missing"
-    return "patched" if MARK in read(bundle) else "clean"
+    src = read(bundle)
+    if MARK in src:
+        return "patched"
+    return "native" if NATIVE.search(src) else "clean"
 
 
 def one(pattern, src, what):
@@ -119,6 +133,10 @@ def patch(bundle, check):
         raise SystemExit(f"not found: {bundle}")
     if st == "patched":
         print("already patched - nothing to do")
+        return
+    if st == "native":
+        print("this version has its own context popover (hover the context chip; click opens")
+        print("the Context Usage panel) - nothing to patch")
         return
     src = read(bundle)
 
