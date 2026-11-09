@@ -636,11 +636,13 @@ def main():
         except ImportError:
             ocg = None
         if ocg is not None:
-            ockey = ocg.find_key(candidates(".claude/opencodego.key"),
-                                 env_files=[os.path.join(qwen, ".env")])
+            def find_ockey():
+                return ocg.find_key(candidates(".claude/opencodego.key"),
+                                    env_files=[os.path.join(qwen, ".env")])
+            ockey = find_ockey()
             catalog = first_existing(candidates(".cache/opencode/models.json"))
             if ockey:
-                mon.opencode = ocg.OpenCodeGo(qwen, ockey, catalog or "")
+                mon.opencode = ocg.OpenCodeGo(qwen, ockey, catalog or "", find_ockey)
                 threading.Thread(target=mon.opencode.loop, daemon=True).start()
                 billing_state += "; OpenCode Go usage on"
 

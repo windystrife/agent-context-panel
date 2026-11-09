@@ -88,9 +88,10 @@ def _ts(s):
 
 
 class OpenCodeGo:
-    def __init__(self, qwen_dir, key, catalog_path):
+    def __init__(self, qwen_dir, key, catalog_path, key_finder=None):
         self.qwen_dir = qwen_dir
         self.key = key
+        self.key_finder = key_finder     # re-reads the key after a 401 (rotated/expired)
         self.lock = threading.Lock()
         self.limits = {}
         self.limits_error = None
@@ -113,6 +114,14 @@ class OpenCodeGo:
                 self.limits = usage
                 self.limits_error = None
         except urllib.error.HTTPError as e:
+            if e.code == 401 and self.key_finder is not None:
+                try:
+                    fresh = self.key_finder()
+                except Exception:
+                    fresh = None
+                if fresh and fresh != self.key:
+                    self.key = fresh
+                    return self.refresh_limits()
             with self.lock:
                 self.limits_error = "HTTP %s" % e.code
         except (urllib.error.URLError, OSError, ValueError) as e:
