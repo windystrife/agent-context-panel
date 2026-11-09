@@ -33,7 +33,7 @@ it only surfaces numbers the apps already wrote to disk.
 qwen-code-desktop/   monitor.py  panel.js  inject.py  ctxpop.py  start-monitor.cmd
                      update-qwen-desktop.ps1/.cmd  update-helper.mjs
                      openrouter_billing.py  opencode_go_usage.py
-                     opencode-session-header.mjs
+                     opencode-session-header.mjs  orca-qwen-hooks.mjs
                      autostart-monitor.ps1  install-autostart.ps1
 opencode-desktop/    monitor.py  inspect_db.py  start-monitor.cmd
 ninfer/              monitor.py  start-ninfer.cmd
@@ -262,6 +262,37 @@ node opencode-session-header.mjs --apply    # write; then restart Qwen Code
 
 Checked with Qwen Code 0.26.5 and 0.26.6 against a throwaway `QWEN_HOME`:
 placeholder without the switch → `400 MissingSessionID`; with it → `200`.
+
+### 5b. Orca status for Qwen panes — `orca-qwen-hooks.mjs`
+
+[Orca](https://onorca.dev) marks each agent pane working / waiting / done from
+hook events, and for Qwen Code it installs those hooks into
+`~/.qwen/settings.json` only. A Qwen Code with `QWEN_HOME` set (as Qwen Code
+Desktop's is) reads `$QWEN_HOME/settings.json`, so the hooks never fire and
+Orca's Qwen panes show nothing. The script copies Orca's events into
+`$QWEN_HOME/settings.json` (Windows; dry run by default, backup first,
+`--remove` takes them out again):
+
+```bash
+node orca-qwen-hooks.mjs --apply
+```
+
+Each entry is just the path of Orca's own `qwen-code-hook.cmd`, written with
+forward slashes and no `shell`, for two measured reasons:
+
+- Orca's entries go through `powershell -Command`, ~330 ms per event, i.e.
+  ~0.7 s per tool call, and settings in `QWEN_HOME` also apply to every Qwen
+  Code Desktop session. Without `shell` Qwen uses cmd.exe: ~45 ms.
+- Without `shell` Qwen picks bash when it was started from Git Bash. Shell
+  syntax such as `if exist …` is then a bash syntax error, exit code 2, and
+  Qwen reads exit 2 from a hook as "block": prompts were dropped without a word.
+  A bare forward-slash path runs under cmd, bash and PowerShell alike. If the
+  script is missing (Orca removed), the hook exits 1 or 127, which Qwen logs and
+  ignores.
+
+Checked end to end with Qwen Code 0.26.5 against a stand-in for Orca's hook
+endpoint, from both cmd and Git Bash: `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse` and `Stop` all arrived with the pane key and token.
 
 ### 6. Session export — `session-export/claude_to_qwen.py`
 
